@@ -31,11 +31,15 @@ object MLBasics {
 
     // Create our source DataFrame from the data/gunshot-data.csv file
     println("Loading data from: " + getPathToData())
-    val df = spark.read
+    val source = spark.read
       .option("header", true)
       .schema(gunshotDataSchema)
       .csv(getPathToData())
-    previewData("Source Data", df)
+
+    // Balance the source data to avoid improper skew destroying the models ability to fit
+    val balancedSource = balanceDataset(source)
+    previewData("Balanced Source Data", balancedSource)
+
 
     // Create custom Transformer for PipelineStage that will convert our string of doubles into a Spark Vector
     val tokenizer = new DoubleTokenizer()
@@ -43,7 +47,7 @@ object MLBasics {
       .setOutputCol(featuresColumn)
     // This will give a sample of what the transformed data looks like. However it also means that you'll
     // be transforming the data for the preview, and then again in the pipeline
-     previewData("Transformed", tokenizer.transform(df))
+     previewData("Transformed", tokenizer.transform(balancedSource))
 
     // Create our Estimator PipelineStage that will use the trainingData to build an algorithm and then predict
     // a value for the testData in the predicted_label column
@@ -60,7 +64,7 @@ object MLBasics {
     )
 
     // Randomly split the source data into training and test data (80% training, 20% test)
-    val Array(trainingData, testData) = df.randomSplit(Array(0.8, 0.2))
+    val Array(trainingData, testData) = balancedSource.randomSplit(Array(0.8, 0.2))
 
     // Construct the Pipeline from the defined stages. We then produce a PipelineModel by
     // "fit"ing the Pipeline to the training data
@@ -108,5 +112,24 @@ object MLBasics {
     } else {
       throw new Exception("Unable to find the data file. Looking in: " + resourcePath)
     }
+  }
+
+  def balanceDataset(df:DataFrame) = {
+    // Find the gunshot samples and the non-gunshot samples
+    val gunshotDf = df.filter("label=1")
+    val nonGunshotDf = df.filter("label=0")
+
+    println("Number of Gunshots: " + gunshotDf.count())
+    println("Total Samples: " + df.count())
+
+    val sampleRatio = gunshotDf.count().toDouble / df.count().toDouble
+    println("Ratio of Gunshots to non-Gunshots: " + sampleRatio)
+
+    // Randomly choose non gunshot entries using our sample ratio so we come out with roughly the same number
+    // of non-gunshot samples as gunshots
+    val nonGunshotSampleDf = nonGunshotDf.sample(false, sampleRatio)
+
+    // Finally join the gunshot samples with the non-gunshot samples to produce our balanced set
+    gunshotDf.union(nonGunshotSampleDf)
   }
 }
