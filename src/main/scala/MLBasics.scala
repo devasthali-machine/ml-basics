@@ -2,6 +2,7 @@ import java.io.File
 
 import org.apache.spark.ml.classification.LogisticRegression
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+import org.apache.spark.ml.tuning.{CrossValidator, ParamGridBuilder}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructType}
@@ -57,23 +58,22 @@ object MLBasics {
       .setPredictionCol(predictionColumn)
 
     // Spark ML lib uses Pipelines to organize scalable data pipelines. Here we're defining
-    // the order of the stages in our pipeline.
+    // the order of the stages in our pipeline. Then we construct the Pipeline.
     val stages = Array[PipelineStage](
       tokenizer,
       lr
     )
+    val pipeline = new Pipeline().setStages(stages)
 
     // Randomly split the source data into training and test data (80% training, 20% test)
     val Array(trainingData, testData) = balancedSource.randomSplit(Array(0.8, 0.2))
 
-    // Construct the Pipeline from the defined stages. We then produce a PipelineModel by
-    // "fit"ing the Pipeline to the training data
-    val pipeline = new Pipeline().setStages(stages)
-    val model = pipeline.fit(trainingData)
-
-    // Now we use the PipelineModel to transform our test data adding a predicted label
-    val predicted = model.transform(testData)
-    previewData("Predictions", predicted)
+    // We use ParamGridBuilder to construct a ParamGrid to define the parameter search space
+    val paramGrid = new ParamGridBuilder()
+      .addGrid(lr.regParam, Array(0.1, 0.01))
+      .addGrid(lr.fitIntercept)
+      .addGrid(lr.elasticNetParam, Array(0.0, 0.5, 1.0))
+      .build()
 
     // We build up a BinaryClassificationEvaluator that can evaluate our predictions and compare
     // them to provided labels. The can compute two metrics of quality: `areaUnderROC` or `areaUnderPR`
@@ -84,9 +84,33 @@ object MLBasics {
       .setRawPredictionCol(predictionColumn)
       .setMetricName("areaUnderPR")
 
+
+    // A CrossValidator will divide our test data up into separate "folds" and use them to determine the best
+    // parameters to use from the ParamGrid. It uses our Evaluator to determine which parameters are better.
+    val cv = new CrossValidator()
+      .setEstimator(pipeline)
+      .setEvaluator(evaluator)
+      .setEstimatorParamMaps(paramGrid)
+      .setNumFolds(3) // The number of partitions in the data to use for searching. Generally use 3 or more.
+      .setParallelism(2) // Evaluate up to 2 parameter settings in parallel
+
+
+    // We now use the CrossValidator to run our pipeline searching for the best set of parameters for our
+    // logistic regression. This results in a model that we can use for prediction with more optimized parameters.
+    val model = cv.fit(trainingData)
+
+    // Now we use the PipelineModel to transform our test data adding a predicted label
+    val predicted = model.transform(testData)
+    previewData("Predictions", predicted)
+
     // Compute the evaluator metric across our predicted data
     val auc = evaluator.evaluate(predicted)
     println("Area Under Curve: " + auc)
+
+    // We'll go ahead and perform the simple pipeline fit for comparisons sake
+    val simpleModel = pipeline.fit(trainingData)
+    val simplePredictions = simpleModel.transform(testData)
+    println("Simple Area Under Curve: " + evaluator.evaluate(simplePredictions))
 
     // That's all folks
     spark.stop()
