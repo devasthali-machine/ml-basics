@@ -1,11 +1,9 @@
 import java.io.File
-
-import org.apache.spark.ml.classification.LogisticRegression
+import org.apache.spark.ml.classification.{LogisticRegression, MultilayerPerceptronClassifier, RandomForestClassifier}
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
-import org.apache.spark.ml.tuning.{CrossValidator, ParamGridBuilder}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
-import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructType}
+import org.apache.spark.sql.{DataFrame, SparkSession}
 
 object MLBasics {
 
@@ -50,30 +48,19 @@ object MLBasics {
     // be transforming the data for the preview, and then again in the pipeline
      previewData("Transformed", tokenizer.transform(balancedSource))
 
-    // Create our Estimator PipelineStage that will use the trainingData to build an algorithm and then predict
-    // a value for the testData in the predicted_label column
-    val lr = new LogisticRegression()
-      .setLabelCol(labelColumn)
-      .setFeaturesCol(featuresColumn)
-      .setPredictionCol(predictionColumn)
+    // Get a classifier
+    val classifier = defineModel()
 
     // Spark ML lib uses Pipelines to organize scalable data pipelines. Here we're defining
     // the order of the stages in our pipeline. Then we construct the Pipeline.
     val stages = Array[PipelineStage](
       tokenizer,
-      lr
+      classifier
     )
     val pipeline = new Pipeline().setStages(stages)
 
     // Randomly split the source data into training and test data (80% training, 20% test)
     val Array(trainingData, testData) = balancedSource.randomSplit(Array(0.8, 0.2))
-
-    // We use ParamGridBuilder to construct a ParamGrid to define the parameter search space
-    val paramGrid = new ParamGridBuilder()
-      .addGrid(lr.regParam, Array(0.1, 0.01))
-      .addGrid(lr.fitIntercept)
-      .addGrid(lr.elasticNetParam, Array(0.0, 0.5, 1.0))
-      .build()
 
     // We build up a BinaryClassificationEvaluator that can evaluate our predictions and compare
     // them to provided labels. The can compute two metrics of quality: `areaUnderROC` or `areaUnderPR`
@@ -84,33 +71,10 @@ object MLBasics {
       .setRawPredictionCol(predictionColumn)
       .setMetricName("areaUnderPR")
 
-
-    // A CrossValidator will divide our test data up into separate "folds" and use them to determine the best
-    // parameters to use from the ParamGrid. It uses our Evaluator to determine which parameters are better.
-    val cv = new CrossValidator()
-      .setEstimator(pipeline)
-      .setEvaluator(evaluator)
-      .setEstimatorParamMaps(paramGrid)
-      .setNumFolds(3) // The number of partitions in the data to use for searching. Generally use 3 or more.
-      .setParallelism(2) // Evaluate up to 2 parameter settings in parallel
-
-
-    // We now use the CrossValidator to run our pipeline searching for the best set of parameters for our
-    // logistic regression. This results in a model that we can use for prediction with more optimized parameters.
-    val model = cv.fit(trainingData)
-
-    // Now we use the PipelineModel to transform our test data adding a predicted label
-    val predicted = model.transform(testData)
-    previewData("Predictions", predicted)
-
-    // Compute the evaluator metric across our predicted data
-    val auc = evaluator.evaluate(predicted)
-    println("Area Under Curve: " + auc)
-
-    // We'll go ahead and perform the simple pipeline fit for comparisons sake
+    // We'll go ahead and perform the simple pipeline fit so we don't need to adjust the ParamGrid for each classifier
     val simpleModel = pipeline.fit(trainingData)
     val simplePredictions = simpleModel.transform(testData)
-    println("Simple Area Under Curve: " + evaluator.evaluate(simplePredictions))
+    println("Area Under Curve: " + evaluator.evaluate(simplePredictions))
 
     // That's all folks
     spark.stop()
@@ -155,5 +119,33 @@ object MLBasics {
 
     // Finally join the gunshot samples with the non-gunshot samples to produce our balanced set
     gunshotDf.union(nonGunshotSampleDf)
+  }
+
+  // Examples of three separate classifiers
+  def defineModel() = {
+    // The most common binary classification: https://en.wikipedia.org/wiki/Logistic_regression
+    val lr = new LogisticRegression()
+      .setLabelCol(labelColumn)
+      .setFeaturesCol(featuresColumn)
+      .setPredictionCol(predictionColumn)
+
+    // Random Forest model - an ensemble of trees: https://en.wikipedia.org/wiki/Random_forest
+    val rf = new RandomForestClassifier()
+      .setLabelCol(labelColumn)
+      .setFeaturesCol(featuresColumn)
+      .setPredictionCol(predictionColumn)
+      .setNumTrees(10)
+
+    // Father of deep learning. Good old neural nets: https://en.wikipedia.org/wiki/Multilayer_perceptron
+    val mlp = new MultilayerPerceptronClassifier()
+      .setLabelCol(labelColumn)
+      .setFeaturesCol(featuresColumn)
+      .setPredictionCol(predictionColumn)
+      .setLayers(Array[Int](270, 100, 10, 2))
+      .setBlockSize(128)
+      .setSeed(1234L)
+      .setMaxIter(100)
+
+    mlp
   }
 }
