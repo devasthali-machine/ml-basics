@@ -1,6 +1,7 @@
 import java.io.File
-import org.apache.spark.ml.classification.{LogisticRegression, MultilayerPerceptronClassifier, RandomForestClassifier}
+import org.apache.spark.ml.classification.MultilayerPerceptronClassifier
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+import org.apache.spark.ml.tuning.{CrossValidator, ParamGridBuilder}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructType}
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -48,8 +49,24 @@ object MLBasics {
     // be transforming the data for the preview, and then again in the pipeline
      previewData("Transformed", tokenizer.transform(balancedSource))
 
-    // Get a classifier
-    val classifier = defineModel()
+    // Create multilayer perception classifier
+    val classifier = new MultilayerPerceptronClassifier()
+      .setLabelCol(labelColumn)
+      .setFeaturesCol(featuresColumn)
+      .setPredictionCol(predictionColumn)
+      .setSeed(1234L)
+
+    // Build a param grid appropriate for a MultilayerPerceptionClassifier
+    val paramGrid = new ParamGridBuilder()
+      .addGrid(classifier.layers, Array[Array[Int]](
+        Array[Int](270, 100, 10, 2),
+        Array[Int](270, 1000, 2),
+        Array[Int](270, 300, 100, 5, 2)
+      ))
+      .addGrid(classifier.blockSize, Array[Int](1, 128, 256, 512))
+      .addGrid(classifier.maxIter, Array[Int](10, 100, 200, 300))
+      .build()
+
 
     // Spark ML lib uses Pipelines to organize scalable data pipelines. Here we're defining
     // the order of the stages in our pipeline. Then we construct the Pipeline.
@@ -71,10 +88,22 @@ object MLBasics {
       .setRawPredictionCol(predictionColumn)
       .setMetricName("areaUnderPR")
 
+    val cv = new CrossValidator()
+      .setEstimator(pipeline)
+      .setEvaluator(evaluator)
+      .setEstimatorParamMaps(paramGrid)
+      .setNumFolds(3) // The number of partitions in the data to use for searching. Generally use 3 or more.
+      .setParallelism(2) // Evaluate up to 2 parameter settings in parallel
+    val model = cv.fit(trainingData)
+    val predicted = model.transform(testData)
+    previewData("Predictions", predicted)
+    val auc = evaluator.evaluate(predicted)
+    println("Area Under Curve: " + auc)
+
     // We'll go ahead and perform the simple pipeline fit so we don't need to adjust the ParamGrid for each classifier
     val simpleModel = pipeline.fit(trainingData)
     val simplePredictions = simpleModel.transform(testData)
-    println("Area Under Curve: " + evaluator.evaluate(simplePredictions))
+    println("Simple Area Under Curve: " + evaluator.evaluate(simplePredictions))
 
     // That's all folks
     spark.stop()
@@ -119,33 +148,5 @@ object MLBasics {
 
     // Finally join the gunshot samples with the non-gunshot samples to produce our balanced set
     gunshotDf.union(nonGunshotSampleDf)
-  }
-
-  // Examples of three separate classifiers
-  def defineModel() = {
-    // The most common binary classification: https://en.wikipedia.org/wiki/Logistic_regression
-    val lr = new LogisticRegression()
-      .setLabelCol(labelColumn)
-      .setFeaturesCol(featuresColumn)
-      .setPredictionCol(predictionColumn)
-
-    // Random Forest model - an ensemble of trees: https://en.wikipedia.org/wiki/Random_forest
-    val rf = new RandomForestClassifier()
-      .setLabelCol(labelColumn)
-      .setFeaturesCol(featuresColumn)
-      .setPredictionCol(predictionColumn)
-      .setNumTrees(10)
-
-    // Father of deep learning. Good old neural nets: https://en.wikipedia.org/wiki/Multilayer_perceptron
-    val mlp = new MultilayerPerceptronClassifier()
-      .setLabelCol(labelColumn)
-      .setFeaturesCol(featuresColumn)
-      .setPredictionCol(predictionColumn)
-      .setLayers(Array[Int](270, 100, 10, 2))
-      .setBlockSize(128)
-      .setSeed(1234L)
-      .setMaxIter(100)
-
-    mlp
   }
 }
